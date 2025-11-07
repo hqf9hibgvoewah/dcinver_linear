@@ -1,0 +1,632 @@
+"""
+频散曲线反演的Python实现
+使用disba进行正演计算，scipy.optimize进行反演优化
+"""
+
+import numpy as np
+import scipy.optimize as opt
+from disba import PhaseDispersion
+import warnings
+from typing import Tuple, Optional
+
+class DispersionInverter:
+    """
+    频散曲线反演器
+    基于Rayleigh波频散数据反演1D速度结构
+    """
+    
+    def __init__(self, vp_vs_ratio: float = 1.9, density_vp_ratio: float = 0.32):
+        """
+        初始化反演器
+        
+        Parameters:
+        -----------
+        vp_vs_ratio : float, default=1.9
+            Vp/Vs比值
+        density_vp_ratio : float, default=0.32  
+            ρ/Vp比值 (g/cm³ per km/s)
+        """
+        self.vp_vs_ratio = vp_vs_ratio
+        self.density_vp_ratio = density_vp_ratio
+        
+    def forward_modeling(self, periods: np.ndarray, model: np.ndarray, 
+                        wave_type: str = 'rayleigh') -> np.ndarray:
+        """
+        Forward modeling for dispersion curves
+        
+        Parameters:
+        -----------
+        periods : np.ndarray
+            Period array (s)
+        model : np.ndarray
+            Velocity model [thickness(km), Vp(km/s), Vs(km/s), density(g/cm³)]
+        wave_type : str, default='rayleigh'
+            Wave type ('rayleigh' or 'love')
+            
+        Returns:
+        --------
+        phase_velocity : np.ndarray
+            Predicted phase velocity (km/s)
+        """
+        # Extract model parameters
+        thickness = model[:, 0]
+        vp = model[:, 1]
+        vs = model[:, 2]
+        density = model[:, 3]
+        
+        # Validate model parameters
+        if np.any(vs <= 0) or np.any(vp <= 0) or np.any(density <= 0):
+            warnings.warn("Invalid model parameters: negative or zero values detected")
+            return np.full_like(periods, np.nan)
+        
+        # Check for physically unrealistic values
+        if np.any(vs > 5.0) or np.any(vp > 9.0) or np.any(density > 3.5):
+            warnings.warn("Model parameters exceed typical physical ranges")
+            # Continue but warn
+        
+        # Use disba for forward modeling with enhanced error handling
+        try:
+            # Prepare model for disba
+            prepared_model = self._prepare_model(thickness, vp, vs, density)
+            
+            # Additional validation for disba requirements
+            if len(prepared_model[0]) < 2:
+                warnings.warn("Model must have at least 2 layers")
+                return np.full_like(periods, np.nan)
+            
+            # Check if Vs < Vp (physical requirement)
+            if np.any(prepared_model[2] >= prepared_model[1]):
+                warnings.warn("Vs must be less than Vp for physical consistency")
+                # Adjust Vs to be slightly less than Vp
+                vs_adjusted = np.minimum(prepared_model[2], prepared_model[1] * 0.99)
+                prepared_model = (prepared_model[0], prepared_model[1], vs_adjusted, prepared_model[3])
+            
+            pd = PhaseDispersion(*prepared_model)
+            
+            if wave_type.lower() == 'rayleigh':
+                dispersion = pd(periods, wave='rayleigh', mode=0)
+            else:
+                dispersion = pd(periods, wave='love', mode=0)
+            
+            # Check for valid results
+            if np.any(np.isnan(dispersion.velocity)) or np.any(dispersion.velocity <= 0):
+                warnings.warn("Forward modeling produced invalid phase velocities")
+                return np.full_like(periods, np.nan)
+                
+            return dispersion.velocity
+            
+        except ValueError as e:
+            # Handle specific disba errors
+            if "No solution found" in str(e):
+                warnings.warn("No dispersion solution found for given model parameters")
+                return np.full_like(periods, np.nan)
+            elif "singular matrix" in str(e).lower():
+                warnings.warn("Numerical instability in forward modeling")
+                return np.full_like(periods, np.nan)
+            else:
+                warnings.warn(f"ValueError in forward modeling: {e}")
+                return np.full_like(periods, np.nan)
+                
+        except Exception as e:
+            warnings.warn(f"Unexpected error in forward modeling: {e}")
+            return np.full_like(periods, np.nan)
+    
+    def _prepare_model(self, thickness: np.ndarray, vp: np.ndarray, 
+                      vs: np.ndarray, density: np.ndarray) -> Tuple:
+        """Prepare model format for disba"""
+        # Ensure bottom layer is half-space
+        if thickness[-1] > 0:
+            thickness = np.append(thickness, 0)
+            vp = np.append(vp, vp[-1])
+            vs = np.append(vs, vs[-1])
+            density = np.append(density, density[-1])
+        
+        return thickness, vp, vs, density
+    
+    def objective_function(self, vs_params: np.ndarray, fixed_model: np.ndarray,
+                          periods: np.ndarray, observed_phv: np.ndarray, 
+                          phv_std: np.ndarray, smoothing_weights: np.ndarray,
+                          damping: float = 0.1) -> float:
+        """
+        Enhanced objective function with professional dispersion curve similarity measures
+        
+        Parameters:
+        -----------
+        vs_params : np.ndarray
+            Vs parameters to optimize
+        fixed_model : np.ndarray
+            Fixed parameter model [thickness, Vp, density]
+        periods : np.ndarray
+            Period array
+        observed_phv : np.ndarray
+            Observed phase velocity
+        phv_std : np.ndarray
+            Observation error
+        smoothing_weights : np.ndarray
+            Smoothing weights
+        damping : float, default=0.1
+            Damping coefficient
+            
+        Returns:
+        --------
+        misfit : float
+            Objective function value
+        """
+        # Build complete model
+        full_model = self._build_model(vs_params, fixed_model)
+        
+        # Forward modeling with enhanced error handling
+        predicted_phv = self.forward_modeling(periods, full_model)
+        
+        # Check for invalid results
+        if np.any(np.isnan(predicted_phv)) or np.any(predicted_phv <= 0):
+            return 1e10  # Return large value for invalid solution
+        
+        # Get valid data points
+        valid_indices = ~np.isnan(observed_phv) & ~np.isnan(predicted_phv)
+        if np.sum(valid_indices) == 0:
+            return 1e10  # No valid data points
+        
+        valid_observed = observed_phv[valid_indices]
+        valid_predicted = predicted_phv[valid_indices]
+        valid_std = phv_std[valid_indices]
+        valid_periods = periods[valid_indices]
+        
+        # Enhanced misfit calculation with multiple similarity measures
+        misfit = self._calculate_enhanced_misfit(
+            valid_observed, valid_predicted, valid_std, valid_periods)
+        
+        # Model smoothness term (first-order difference)
+        if len(vs_params) > 1:
+            model_smoothness = np.sum(smoothing_weights * np.diff(vs_params) ** 2)
+        else:
+            model_smoothness = 0.0
+        
+        # Total objective function
+        total_misfit = misfit + damping * model_smoothness
+        
+        return total_misfit
+    
+    def _calculate_enhanced_misfit(self, observed: np.ndarray, predicted: np.ndarray,
+                                 std: np.ndarray, periods: np.ndarray) -> float:
+        """
+        Calculate enhanced misfit using multiple professional similarity measures
+        
+        Parameters:
+        -----------
+        observed : np.ndarray
+            Observed phase velocities
+        predicted : np.ndarray
+            Predicted phase velocities
+        std : np.ndarray
+            Observation errors
+        periods : np.ndarray
+            Period array
+            
+        Returns:
+        --------
+        combined_misfit : float
+            Combined misfit value
+        """
+        n_points = len(observed)
+        if n_points < 3:
+            return 1e10  # Not enough data points
+        
+        # 1. Weighted L2 norm (traditional but robust)
+        weighted_l2 = np.sum(((predicted - observed) / std) ** 2)
+        
+        # 2. Normalized RMS misfit (scale-independent)
+        rms_misfit = np.sqrt(np.mean(((predicted - observed) / observed) ** 2))
+        
+        # 3. Correlation coefficient based misfit
+        correlation = np.corrcoef(observed, predicted)[0, 1]
+        if np.isnan(correlation):
+            correlation_misfit = 1.0
+        else:
+            correlation_misfit = 1.0 - correlation  # Higher correlation = lower misfit
+        
+        # 4. Frequency-weighted misfit (emphasize longer periods)
+        period_weights = periods / np.max(periods)  # Weight by period
+        freq_weighted_misfit = np.sum(period_weights * ((predicted - observed) / std) ** 2)
+        
+        # 5. Shape-based misfit (focus on curve shape rather than absolute values)
+        # Normalize curves to zero mean and unit variance
+        obs_norm = (observed - np.mean(observed)) / np.std(observed)
+        pred_norm = (predicted - np.mean(predicted)) / np.std(predicted)
+        shape_misfit = np.sum((obs_norm - pred_norm) ** 2)
+        
+        # 6. Derivative-based misfit (match slope of dispersion curve)
+        if n_points >= 4:
+            # Calculate first derivatives (slope)
+            obs_deriv = np.gradient(observed, periods)
+            pred_deriv = np.gradient(predicted, periods)
+            deriv_misfit = np.sum(((pred_deriv - obs_deriv) / (np.abs(obs_deriv) + 0.01)) ** 2)
+        else:
+            deriv_misfit = 0.0
+        
+        # 7. Logarithmic misfit (better for wide velocity ranges)
+        log_misfit = np.sum((np.log(predicted) - np.log(observed)) ** 2)
+        
+        # Combine all misfit measures with appropriate weights
+        misfit_components = {
+            'weighted_l2': weighted_l2,
+            'rms_misfit': rms_misfit * n_points,  # Scale to be comparable
+            'correlation': correlation_misfit * n_points,
+            'frequency_weighted': freq_weighted_misfit,
+            'shape': shape_misfit,
+            'derivative': deriv_misfit,
+            'logarithmic': log_misfit
+        }
+        
+        # Adaptive weighting based on data quality and curve characteristics
+        weights = self._calculate_adaptive_weights(observed, predicted, periods)
+        
+        # Combine misfit components
+        combined_misfit = 0.0
+        for key, misfit_val in misfit_components.items():
+            combined_misfit += weights[key] * misfit_val
+        
+        return combined_misfit
+    
+    def _calculate_adaptive_weights(self, observed: np.ndarray, predicted: np.ndarray,
+                                  periods: np.ndarray) -> dict:
+        """
+        Calculate adaptive weights for different misfit components
+        
+        Parameters:
+        -----------
+        observed : np.ndarray
+            Observed phase velocities
+        predicted : np.ndarray
+            Predicted phase velocities
+        periods : np.ndarray
+            Period array
+            
+        Returns:
+        --------
+        weights : dict
+            Dictionary of weights for each misfit component
+        """
+        n_points = len(observed)
+        
+        # Base weights (can be adjusted based on specific requirements)
+        base_weights = {
+            'weighted_l2': 0.3,      # Traditional measure
+            'rms_misfit': 0.2,       # Scale-independent
+            'correlation': 0.15,     # Curve similarity
+            'frequency_weighted': 0.1, # Emphasize longer periods
+            'shape': 0.1,            # Shape matching
+            'derivative': 0.1,       # Slope matching
+            'logarithmic': 0.05      # Logarithmic scale
+        }
+        
+        # Adaptive adjustments based on data characteristics
+        
+        # If data has high variance, emphasize shape and correlation
+        obs_variance = np.var(observed)
+        if obs_variance > 0.1:  # High variance
+            base_weights['shape'] *= 1.5
+            base_weights['correlation'] *= 1.3
+        
+        # If periods cover wide range, emphasize frequency weighting
+        period_range = np.max(periods) - np.min(periods)
+        if period_range > 10:  # Wide period range
+            base_weights['frequency_weighted'] *= 1.5
+            base_weights['derivative'] *= 1.2
+        
+        # Normalize weights to sum to 1
+        total_weight = sum(base_weights.values())
+        normalized_weights = {k: v/total_weight for k, v in base_weights.items()}
+        
+        return normalized_weights
+    
+    def _build_model(self, vs_params: np.ndarray, fixed_model: np.ndarray) -> np.ndarray:
+        """构建完整的速度模型"""
+        thickness = fixed_model[:, 0]
+        vp = self.vp_vs_ratio * vs_params
+        density = self.density_vp_ratio * vp
+        
+        return np.column_stack([thickness, vp, vs_params, density])
+    
+    def set_smoothing_weights(self, model: np.ndarray, water_depth: float = 0,
+                            crust_thickness: float = -1) -> np.ndarray:
+        """
+        设置平滑权重，允许在特定界面处有较大变化
+        
+        Parameters:
+        -----------
+        model : np.ndarray
+            速度模型
+        water_depth : float, default=0
+            水深 (km)
+        crust_thickness : float, default=-1
+            地壳厚度 (km)，<0表示不使用
+            
+        Returns:
+        --------
+        weights : np.ndarray
+            平滑权重数组
+        """
+        n_layers = len(model)
+        weights = np.ones(n_layers - 1)  # 差分项数量
+        
+        # 计算深度剖面
+        depths = np.cumsum(model[:, 0])
+        
+        # 初始化海底界面索引
+        seafloor_idx = -1
+        
+        # 设置海底界面处的权重
+        if water_depth > 0:
+            seafloor_idx = np.argmin(np.abs(depths - water_depth))
+            if seafloor_idx < len(weights):
+                weights[seafloor_idx] = 0.1  # 小权重允许大变化
+        
+        # 设置莫霍面处的权重
+        if crust_thickness > 0:
+            moho_depth = water_depth + crust_thickness
+            moho_idx = np.argmin(np.abs(depths - moho_depth))
+            if moho_idx < len(weights):
+                weights[moho_idx] = 0.1  # 小权重允许大变化
+                
+                # 地壳内部中等平滑（仅在海底界面存在时应用）
+                if seafloor_idx >= 0 and seafloor_idx < moho_idx - 2:
+                    weights[seafloor_idx+1:moho_idx-1] = 0.5
+                
+                # 莫霍面附近较强平滑
+                if moho_idx > 1 and moho_idx < len(weights) - 1:
+                    weights[moho_idx-1:moho_idx+1] = 0.2
+        
+        return weights
+    
+    def invert(self, periods: np.ndarray, observed_phv: np.ndarray, 
+               phv_std: np.ndarray, initial_model: np.ndarray,
+               water_depth: float = 0, crust_thickness: float = -1,
+               n_iterations: int = 5, damping: float = 0.1,
+               bounds: Optional[Tuple] = None) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Execute dispersion curve inversion with enhanced convergence monitoring
+        
+        Parameters:
+        -----------
+        periods : np.ndarray
+            Period array (s)
+        observed_phv : np.ndarray
+            Observed phase velocity (km/s)
+        phv_std : np.ndarray
+            Observation error (km/s)
+        initial_model : np.ndarray
+            Initial model [thickness(km), Vp(km/s), Vs(km/s), density(g/cm³)]
+        water_depth : float, default=0
+            Water depth (km)
+        crust_thickness : float, default=-1
+            Crust thickness (km)
+        n_iterations : int, default=5
+            Number of iterations
+        damping : float, default=0.1
+            Damping coefficient
+        bounds : tuple, optional
+            Parameter bounds [(min_Vs, max_Vs), ...]
+            
+        Returns:
+        --------
+        inverted_model : np.ndarray
+            Inverted model
+        predicted_phv : np.ndarray
+            Predicted phase velocity
+        """
+        print("=========== 1D Rayleigh Wave Dispersion Inversion ============")
+        
+        # Validate input data
+        if len(periods) != len(observed_phv) or len(periods) != len(phv_std):
+            raise ValueError("Input arrays must have the same length")
+        
+        if np.any(phv_std <= 0):
+            warnings.warn("Invalid standard deviations detected, using default values")
+            phv_std = np.full_like(phv_std, 0.05)  # Default 5% error
+        
+        # Set smoothing weights
+        smoothing_weights = self.set_smoothing_weights(
+            initial_model, water_depth, crust_thickness)
+        
+        # Extract fixed parameters
+        thickness = initial_model[:, 0]
+        fixed_model = np.column_stack([thickness, 
+                                     initial_model[:, 1],  # Vp
+                                     initial_model[:, 3]]) # density
+        
+        # Initial Vs parameters
+        initial_vs = initial_model[:, 2].copy()
+        
+        # Set parameter bounds with physical constraints
+        if bounds is None:
+            # Default bounds: Vs between 1-5 km/s, ensuring Vs < Vp
+            bounds = []
+            for i, vs_val in enumerate(initial_vs):
+                vp_val = initial_model[i, 1]
+                min_vs = max(0.1, vp_val * 0.4)  # Vs must be at least 40% of Vp
+                max_vs = min(5.0, vp_val * 0.99)  # Vs must be less than Vp
+                bounds.append((min_vs, max_vs))
+        
+        # Enhanced iterative inversion with comprehensive monitoring
+        current_vs = initial_vs.copy()
+        best_vs = initial_vs.copy()
+        best_misfit = float('inf')
+        consecutive_failures = 0
+        max_consecutive_failures = 3
+        convergence_history = []
+        
+        print(f"Starting inversion with {n_iterations} iterations")
+        print(f"Data points: {len(periods)}, Model layers: {len(initial_vs)}")
+        
+        for iteration in range(n_iterations):
+            print(f"\n--- Iteration {iteration + 1}/{n_iterations} ---")
+            
+            try:
+                # Test forward modeling with current parameters
+                test_model = self._build_model(current_vs, fixed_model)
+                test_phv = self.forward_modeling(periods, test_model)
+                
+                if np.any(np.isnan(test_phv)):
+                    warnings.warn(f"Iteration {iteration+1}: Forward modeling failed, using previous solution")
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_consecutive_failures:
+                        warnings.warn("Too many consecutive failures, stopping inversion")
+                        break
+                    continue
+                
+                # Reset failure counter on success
+                consecutive_failures = 0
+                
+                # Optimize with enhanced objective function
+                result = opt.minimize(
+                    self.objective_function,
+                    current_vs,
+                    args=(fixed_model, periods, observed_phv, phv_std, 
+                          smoothing_weights, damping),
+                    bounds=bounds,
+                    method='L-BFGS-B',
+                    options={
+                        'maxiter': 50,
+                        'ftol': 1e-4,
+                        'gtol': 1e-4,
+                        'eps': 1e-6,
+                        'maxls': 20
+                    }
+                )
+                
+                if result.success:
+                    current_vs = result.x
+                    current_misfit = result.fun
+                    
+                    # Calculate additional quality metrics
+                    final_model = self._build_model(current_vs, fixed_model)
+                    final_pred = self.forward_modeling(periods, final_model)
+                    valid_indices = ~np.isnan(observed_phv) & ~np.isnan(final_pred)
+                    
+                    if np.sum(valid_indices) > 0:
+                        valid_obs = observed_phv[valid_indices]
+                        valid_pred = final_pred[valid_indices]
+                        
+                        # Calculate multiple quality metrics
+                        correlation = np.corrcoef(valid_obs, valid_pred)[0, 1]
+                        rms_error = np.sqrt(np.mean(((valid_pred - valid_obs) / valid_obs) ** 2))
+                        max_error = np.max(np.abs(valid_pred - valid_obs))
+                        
+                        print(f"  Objective function: {current_misfit:.6f}")
+                        print(f"  Correlation: {correlation:.4f}")
+                        print(f"  RMS relative error: {rms_error:.4f}")
+                        print(f"  Maximum absolute error: {max_error:.4f} km/s")
+                    
+                    # Track best solution
+                    if current_misfit < best_misfit:
+                        best_misfit = current_misfit
+                        best_vs = current_vs.copy()
+                        print("  *** New best solution found ***")
+                    
+                    # Store convergence history
+                    convergence_history.append(current_misfit)
+                    
+                    # Enhanced convergence detection
+                    if iteration >= 2:
+                        # Check relative improvement
+                        recent_improvement = (convergence_history[-3] - current_misfit) / convergence_history[-3]
+                        if abs(recent_improvement) < 1e-5:
+                            print("  Convergence achieved (minimal improvement)")
+                            break
+                        
+                        # Check oscillation
+                        if len(convergence_history) >= 4:
+                            recent_changes = np.diff(convergence_history[-4:])
+                            if np.all(np.abs(recent_changes) < 1e-4):
+                                print("  Convergence achieved (stable solution)")
+                                break
+                    
+                else:
+                    warnings.warn(f"Iteration {iteration+1} optimization failed: {result.message}")
+                    # Continue with current best solution
+                    if best_misfit < float('inf'):
+                        current_vs = best_vs.copy()
+                        print("  Reverting to best known solution")
+                    
+            except Exception as e:
+                warnings.warn(f"Iteration {iteration+1} encountered error: {str(e)}")
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    warnings.warn("Too many consecutive failures, stopping inversion")
+                    break
+                # Continue with current best solution
+                if best_misfit < float('inf'):
+                    current_vs = best_vs.copy()
+                    print("  Reverting to best known solution after error")
+        
+        # Final solution selection with comprehensive validation
+        if best_misfit < float('inf'):
+            final_vs = best_vs
+            print(f"\nBest solution found with misfit: {best_misfit:.6f}")
+        else:
+            warnings.warn("No valid solution found, using initial model")
+            final_vs = initial_vs.copy()
+            print("Using initial model as fallback")
+        
+        # Build final model
+        inverted_model = self._build_model(final_vs, fixed_model)
+        
+        # Calculate final prediction and comprehensive quality assessment
+        predicted_phv = self.forward_modeling(periods, inverted_model)
+        
+        # Final validation and quality metrics
+        valid_indices = ~np.isnan(observed_phv) & ~np.isnan(predicted_phv)
+        if np.sum(valid_indices) > 0:
+            valid_obs = observed_phv[valid_indices]
+            valid_pred = predicted_phv[valid_indices]
+            
+            # Comprehensive quality assessment
+            correlation = np.corrcoef(valid_obs, valid_pred)[0, 1] if len(valid_obs) > 1 else 1.0
+            rms_relative = np.sqrt(np.mean(((valid_pred - valid_obs) / valid_obs) ** 2))
+            max_absolute = np.max(np.abs(valid_pred - valid_obs))
+            mean_absolute = np.mean(np.abs(valid_pred - valid_obs))
+            
+            print("\n================= Final Results ===================")
+            print(f"Correlation coefficient: {correlation:.4f}")
+            print(f"RMS relative error: {rms_relative:.4f}")
+            print(f"Mean absolute error: {mean_absolute:.4f} km/s")
+            print(f"Maximum absolute error: {max_absolute:.4f} km/s")
+            print(f"Data points fitted: {np.sum(valid_indices)}/{len(periods)}")
+        else:
+            warnings.warn("Final model produced invalid predictions")
+            # Fallback to initial model
+            inverted_model = initial_model.copy()
+            predicted_phv = self.forward_modeling(periods, initial_model)
+            print("Reverted to initial model due to prediction failure")
+        
+        print("================= Inversion Completed ===================")
+        
+        return inverted_model, predicted_phv
+
+# Convenience function
+def invdispR(periods: np.ndarray, observed_phv: np.ndarray, 
+             phv_std: np.ndarray, initial_model: np.ndarray,
+             water_depth: float = 0, crust_thickness: float = -1,
+             n_iterations: int = 5, **kwargs) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Dispersion curve inversion function (MATLAB compatible interface)
+    
+    Parameters:
+    -----------
+    periods : Period array
+    observed_phv : Observed phase velocity
+    phv_std : Observation error
+    initial_model : Initial model [thickness, Vp, Vs, density]
+    water_depth : Water depth
+    crust_thickness : Crust thickness
+    n_iterations : Number of iterations
+    
+    Returns:
+    --------
+    inverted_model : Inverted model
+    predicted_phv : Predicted phase velocity
+    """
+    inverter = DispersionInverter()
+    return inverter.invert(periods, observed_phv, phv_std, initial_model,
+                          water_depth, crust_thickness, n_iterations, **kwargs)
