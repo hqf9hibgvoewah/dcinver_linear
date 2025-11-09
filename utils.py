@@ -4,6 +4,41 @@
 
 import numpy as np
 from typing import Union
+from scipy.interpolate import interp1d
+
+def vr2vs(vr,sita): # Vr transform vs, sita is Piosson Ratio
+    vs = ((1 + sita) * vr)/(0.87 + 1.12 * sita)
+    return vs
+def vr2vp(vr,sita): # Vr transform vp
+    vs = vr2vs(vr,sita)
+    vp = 1.73 * vs
+    return vp
+def vr2ly(vr,freq,a): # Vr transform layer
+    ly = a * vr / freq
+    return ly
+def vr2ly_period(vr,period,a): # Vr transform layer
+    ly = a * vr * period
+    return ly
+def SmoothLine(x,y,n): # scatter line smooth.
+    new_inter = interp1d(x,y,kind='cubic')
+    # new_x = np.linspace(x[0],x[-1],multiple*len(x))
+    new_x = np.linspace(x[0],x[-1],n)
+    new_y = new_inter(new_x)
+    return new_x,new_y
+def empirical_initial_model(vr,period,a,manual_ly=None,c_model=1):
+    """
+    基于 vr 和 period 计算初始模型
+    """
+    # 计算 vp 和 vs
+    vp = vr2vp(vr,0.25)
+    vs = vr2vs(vr,0.25)
+    ly = vr2ly_period(vr,period,a)    
+    if c_model == 1:
+        return vp, vs, ly
+    elif c_model == 2 and manual_ly is not None:
+        new_ly,new_vs = SmoothLine(ly,vs,len(manual_ly))
+        new_vp = vr2vp(new_vs,0.25)
+        return new_vp, new_vs
 
 def create_layered_model(depths: np.ndarray, vp: Union[float, np.ndarray], 
                         vs: Union[float, np.ndarray], 
@@ -230,3 +265,13 @@ def calculate_rms_misfit(observed: np.ndarray, predicted: np.ndarray,
         misfit = np.sqrt(np.mean((obs_valid - pred_valid)**2))
     
     return misfit
+def conservative_phv_std_strategy(observed_phv, periods, noise_level = 0.03):
+    """保守策略：使用较大的标准差提高稳定性"""
+    # 基础误差设为3%
+    base_std = noise_level * np.mean(observed_phv)
+    
+    # 根据周期调整：长周期数据误差更大
+    period_weights = periods / np.max(periods)
+    phv_std = base_std * (1 + 0.1 * period_weights)  # 长周期误差增加50%
+    
+    return phv_std
