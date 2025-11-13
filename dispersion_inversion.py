@@ -6,6 +6,7 @@
 import numpy as np
 import scipy.optimize as opt
 from disba import PhaseDispersion
+from disba import GroupDispersion
 import warnings
 from typing import Tuple, Optional
 
@@ -30,7 +31,7 @@ class DispersionInverter:
         self.density_vp_ratio = density_vp_ratio
         
     def forward_modeling(self, periods: np.ndarray, model: np.ndarray, 
-                        wave_type: str = 'rayleigh') -> np.ndarray:
+                        wave_type: str = 'rayleigh',forward_type: str = 'phase') -> np.ndarray:
         """
         Forward modeling for dispersion curves
         
@@ -42,11 +43,13 @@ class DispersionInverter:
             Velocity model [thickness(km), Vp(km/s), Vs(km/s), density(g/cm³)]
         wave_type : str, default='rayleigh'
             Wave type ('rayleigh' or 'love')
+        forward_type : str, default='phase'
+            Forward type ('phase' or 'group')
             
         Returns:
         --------
         phase_velocity : np.ndarray
-            Predicted phase velocity (km/s)
+            Predicted phase velocity (km/s) or group velocity (km/s)
         """
         # Extract model parameters
         thickness = model[:, 0]
@@ -81,7 +84,10 @@ class DispersionInverter:
                 vs_adjusted = np.minimum(prepared_model[2], prepared_model[1] * 0.99)
                 prepared_model = (prepared_model[0], prepared_model[1], vs_adjusted, prepared_model[3])
             
-            pd = PhaseDispersion(*prepared_model)
+            if forward_type.lower() == 'phase':
+                pd = PhaseDispersion(*prepared_model)
+            elif forward_type.lower() == 'group':
+                pd = GroupDispersion(*prepared_model)
             
             if wave_type.lower() == 'rayleigh':
                 dispersion = pd(periods, wave='rayleigh', mode=0)
@@ -126,7 +132,7 @@ class DispersionInverter:
     def objective_function(self, vs_params: np.ndarray, fixed_model: np.ndarray,
                           periods: np.ndarray, observed_phv: np.ndarray, 
                           phv_std: np.ndarray, smoothing_weights: np.ndarray,
-                          damping: float = 0.1) -> float:
+                          damping: float = 0.1, forward_type: str = 'phase') -> float:
         """
         Enhanced objective function with professional dispersion curve similarity measures
         
@@ -139,13 +145,15 @@ class DispersionInverter:
         periods : np.ndarray
             Period array
         observed_phv : np.ndarray
-            Observed phase velocity
+            Observed phase velocity or group velocity
         phv_std : np.ndarray
             Observation error
         smoothing_weights : np.ndarray
             Smoothing weights
         damping : float, default=0.1
             Damping coefficient
+        forward_type : str, default='phase'
+            Forward type ('phase' or 'group')
             
         Returns:
         --------
@@ -156,7 +164,7 @@ class DispersionInverter:
         full_model = self._build_model(vs_params, fixed_model)
         
         # Forward modeling with enhanced error handling
-        predicted_phv = self.forward_modeling(periods, full_model)
+        predicted_phv = self.forward_modeling(periods, full_model, forward_type=forward_type)
         
         # Check for invalid results
         if np.any(np.isnan(predicted_phv)) or np.any(predicted_phv <= 0):
@@ -380,7 +388,7 @@ class DispersionInverter:
         return weights
     
     def invert(self, periods: np.ndarray, observed_phv: np.ndarray, 
-               phv_std: np.ndarray, initial_model: np.ndarray,
+               phv_std: np.ndarray, initial_model: np.ndarray, forward_type: str = 'phase',
                water_depth: float = 0, crust_thickness: float = -1,
                n_iterations: int = 5, damping: float = 0.1,
                vary_thickness: bool = False,
@@ -401,6 +409,8 @@ class DispersionInverter:
             观测误差 (km/s)
         initial_model : np.ndarray
             初始模型 [厚度(km), Vp(km/s), Vs(km/s), 密度(g/cm³)]
+        forward_type : str, default='phase'
+            正演类型 ('phase' or 'group')
         water_depth : float, default=0
             水深 (km)
         crust_thickness : float, default=-1
@@ -417,7 +427,7 @@ class DispersionInverter:
             参数边界
         rms_error_threshold : float, optional
             RMS误差停止阈值
-        max_consecutive_failures : int, default=3
+max_consecutive_failures : int, default=3
             最大连续失败次数
             
         Returns:
@@ -519,7 +529,7 @@ class DispersionInverter:
                     current_model = self._build_model(current_vs, fixed_model)
                 
                 # 测试正演模拟
-                test_phv = self.forward_modeling(periods, current_model)
+                test_phv = self.forward_modeling(periods, current_model, forward_type=forward_type)
                 
                 if np.any(np.isnan(test_phv)):
                     warnings.warn(f"Iteration {iteration+1}: 正演模拟失败，使用先前解")
@@ -560,7 +570,7 @@ class DispersionInverter:
                         self.objective_function,
                         current_params,
                         args=(fixed_model, periods, observed_phv, phv_std, 
-                              smoothing_weights, current_damping),
+                              smoothing_weights, current_damping, forward_type),
                         bounds=bounds,
                         method='L-BFGS-B',
                         options=opt_options
@@ -580,7 +590,7 @@ class DispersionInverter:
                         final_vs = current_params
                         final_model = self._build_model(final_vs, fixed_model)
                     
-                    final_pred = self.forward_modeling(periods, final_model)
+                    final_pred = self.forward_modeling(periods, final_model, forward_type=forward_type)
                     valid_indices = ~np.isnan(observed_phv) & ~np.isnan(final_pred)
                     
                     if np.sum(valid_indices) > 0:
@@ -656,7 +666,7 @@ class DispersionInverter:
             inverted_model = self._build_model(final_vs, fixed_model)
         
         # 最终预测和质量评估
-        predicted_phv = self.forward_modeling(periods, inverted_model)
+        predicted_phv = self.forward_modeling(periods, inverted_model, forward_type=forward_type)
         
         # 最终验证
         valid_indices = ~np.isnan(observed_phv) & ~np.isnan(predicted_phv)
@@ -682,12 +692,109 @@ class DispersionInverter:
         
         return inverted_model, predicted_phv
 
+    # def objective_function(self, vs_params: np.ndarray, fixed_model: np.ndarray,
+    #                       periods: np.ndarray, observed_phv: np.ndarray, 
+    #                       phv_std: np.ndarray, smoothing_weights: np.ndarray,
+    #                       damping: float = 0.1, forward_type: str = 'phase') -> float:
+    #     """
+    #     Enhanced objective function with professional dispersion curve similarity measures
+        
+    #     Parameters:
+    #     -----------
+    #     vs_params : np.ndarray
+    #         Vs parameters to optimize
+    #     fixed_model : np.ndarray
+    #         Fixed parameter model [thickness, Vp, density]
+    #     periods : np.ndarray
+    #         Period array
+    #     observed_phv : np.ndarray
+    #         Observed phase velocity or group velocity
+    #     phv_std : np.ndarray
+    #         Observation error
+    #     smoothing_weights : np.ndarray
+    #         Smoothing weights
+    #     damping : float, default=0.1
+    #         Damping coefficient
+    #     forward_type : str, default='phase'
+    #         Forward type ('phase' or 'group')
+            
+    #     Returns:
+    #     --------
+    #     misfit : float
+    #         Objective function value
+    #     """
+    #     # Build complete model
+    #     full_model = self._build_model(vs_params, fixed_model)
+        
+    #     # Forward modeling with enhanced error handling
+    #     predicted_phv = self.forward_modeling(periods, full_model, forward_type=forward_type)
+        
+    #     # 数据拟合项
+    #     valid_indices = ~np.isnan(observed_phv) & ~np.isnan(predicted_phv)
+    #     if np.sum(valid_indices) == 0:
+    #         return 1e10
+        
+    #     valid_obs = observed_phv[valid_indices]
+    #     valid_pred = predicted_phv[valid_indices]
+    #     valid_std = phv_std[valid_indices]
+        
+    #     # 加权L2范数
+    #     data_misfit = np.sum(((valid_pred - valid_obs) / valid_std) ** 2)
+        
+    #     # 模型平滑项（针对Vs）
+    #     vs_smoothness = 0
+    #     if len(vs) > 1:
+    #         vs_diff = np.diff(vs)
+    #         vs_smoothness = np.sum((vs_diff ** 2) * smoothing_weights)
+        
+    #     # 层厚平滑项（如果允许层厚变化）
+    #     thickness_smoothness = 0
+    #     if len(thickness) > 1:
+    #         # 层厚变化应相对平滑
+    #         thickness_diff = np.diff(np.log(thickness))  # 对数尺度更合理
+    #         thickness_smoothness = np.sum(thickness_diff ** 2)
+        
+    #     # 总目标函数
+    #     total_misfit = data_misfit + damping * (vs_smoothness + 0.5 * thickness_smoothness)
+        
+    #     return total_misfit
+
     def objective_function_with_thickness(self, params, fixed_vp, fixed_density, 
                                         periods, observed_phv, phv_std, 
-                                        smoothing_weights, damping, 
+                                        smoothing_weights, damping, forward_type,
                                         water_depth, crust_thickness):
         """
         支持层厚变化的目标函数
+        
+        Parameters:
+        -----------
+        params : np.ndarray
+            优化参数 [厚度1, 厚度2, ..., Vs1, Vs2, ...]
+        fixed_vp : np.ndarray
+            固定的Vp值
+        fixed_density : np.ndarray
+            固定的密度值
+        periods : np.ndarray
+            周期数组
+        observed_phv : np.ndarray
+            观测相速度或群速度
+        phv_std : np.ndarray
+            观测误差
+        smoothing_weights : np.ndarray
+            平滑权重
+        damping : float
+            阻尼系数
+        forward_type : str
+            正演类型 ('phase' or 'group')
+        water_depth : float
+            水深
+        crust_thickness : float
+            地壳厚度
+            
+        Returns:
+        --------
+        total_misfit : float
+            总目标函数值
         """
         n_layers = len(fixed_vp)
         thickness = params[:n_layers]
@@ -696,8 +803,8 @@ class DispersionInverter:
         # 构建模型
         model = np.column_stack([thickness, fixed_vp, vs, fixed_density])
         
-        # 计算预测值
-        predicted_phv = self.forward_modeling(periods, model)
+        # 计算预测值（支持群速度反演）
+        predicted_phv = self.forward_modeling(periods, model, forward_type=forward_type)
         
         if np.any(np.isnan(predicted_phv)):
             return 1e10  # 返回大值表示失败
@@ -768,25 +875,28 @@ class DispersionInverter:
 def invdispR(periods: np.ndarray, observed_phv: np.ndarray, 
              phv_std: np.ndarray, initial_model: np.ndarray,
              water_depth: float = 0, crust_thickness: float = -1,
-             n_iterations: int = 5, **kwargs) -> Tuple[np.ndarray, np.ndarray]:
+             n_iterations: int = 5, forward_type: str = 'phase', **kwargs) -> Tuple[np.ndarray, np.ndarray]:
     """
     Dispersion curve inversion function (MATLAB compatible interface)
     
     Parameters:
     -----------
     periods : Period array
-    observed_phv : Observed phase velocity
+    observed_phv : Observed phase velocity or group velocity
     phv_std : Observation error
     initial_model : Initial model [thickness, Vp, Vs, density]
     water_depth : Water depth
     crust_thickness : Crust thickness
     n_iterations : Number of iterations
+    forward_type : str, default='phase'
+        Forward type ('phase' or 'group')
     
     Returns:
     --------
     inverted_model : Inverted model
-    predicted_phv : Predicted phase velocity
+    predicted_phv : Predicted phase velocity or group velocity
     """
     inverter = DispersionInverter()
     return inverter.invert(periods, observed_phv, phv_std, initial_model,
-                          water_depth, crust_thickness, n_iterations, **kwargs)
+                          forward_type=forward_type, water_depth=water_depth, 
+                          crust_thickness=crust_thickness, n_iterations=n_iterations, **kwargs)

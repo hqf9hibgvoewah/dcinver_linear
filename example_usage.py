@@ -188,13 +188,13 @@ if __name__ == "__main__":
     
     # Forward modeling for "observed" data
     inverter = DispersionInverter()
-    true_phv = inverter.forward_modeling(periods, true_model)
+    true_phv = inverter.forward_modeling(periods, true_model, forward_type='group')
     
     # Add noise
     # noise_level = 0.002  # 2% noise
     # observed_phv = true_phv * (1 + noise_level * np.random.randn(len(periods)))
     # phv_std = np.full_like(periods, noise_level * np.mean(true_phv))
-    phv_std = conservative_phv_std_strategy(vr, periods, noise_level=0.01)
+    phv_std = conservative_phv_std_strategy(vr, periods, noise_level=0.002)
 
     # Initial model (simpler than true model)
     initial_model = create_layered_model(manual_ly, new_vp, new_vs)
@@ -203,9 +203,9 @@ if __name__ == "__main__":
         # Execute inversion with improved settings
         print("Starting inversion...")
         inverted_model, predicted_phv = invdispR(
-            periods, vr, phv_std, initial_model,
-            water_depth=0, crust_thickness=30, n_iterations=20,  # Reduced iterations for testing
-            damping=0.005  # Reduced damping for better convergence
+            periods, vr, phv_std, initial_model, forward_type='group',
+            water_depth=0, crust_thickness=30, n_iterations=30,  # Reduced iterations for testing
+            damping=0.05  # Reduced damping for better convergence
         )
         
         # # Enhanced misfit evaluation
@@ -223,7 +223,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Error during inversion: {e}")
         # # Fallback: use forward modeling with initial model
-        predicted_phv = inverter.forward_modeling(periods, initial_model)
+        predicted_phv = inverter.forward_modeling(periods, initial_model, forward_type='group')
         
         # # Calculate fallback misfit
         # metrics = calculate_enhanced_misfit(observed_phv, predicted_phv, phv_std, periods)
@@ -235,70 +235,70 @@ if __name__ == "__main__":
         plot_results(periods, vr, true_phv, predicted_phv, 
                      true_model, initial_model, initial_model)
 
-    # %%
-    """1D inversion example with enhanced misfit evaluation"""
+    # # %%
+    # """1D inversion example with enhanced misfit evaluation"""
     
-    print("Starting 1D dispersion curve inversion example...")
+    # print("Starting 1D dispersion curve inversion example...")
     
-    # Generate synthetic data
-    periods = np.linspace(5, 40, 20)  # 5-40 seconds period
+    # # Generate synthetic data
+    # periods = np.linspace(5, 40, 20)  # 5-40 seconds period
     
-    # True model (3-layer structure)
-    true_depths = np.array([2, 10, 15, 20, 30, 35])  # Interface depths
-    true_vp = np.array([4.0, 4.0, 5.0, 6.0, 6.0, 6.0])  # P-wave velocity
-    true_vs = np.array([2.3, 3.5, 3.5, 4.5, 4.5, 4.5])  # S-wave velocity
+    # # True model (3-layer structure)
+    # true_depths = np.array([2, 10, 15, 20, 30, 35])  # Interface depths
+    # true_vp = np.array([4.0, 4.0, 5.0, 6.0, 6.0, 6.0])  # P-wave velocity
+    # true_vs = np.array([2.3, 3.5, 3.5, 4.5, 4.5, 4.5])  # S-wave velocity
     
-    true_model = create_layered_model(true_depths, true_vp, true_vs)
+    # true_model = create_layered_model(true_depths, true_vp, true_vs)
     
-    # Forward modeling for "observed" data
-    inverter = DispersionInverter()
-    true_phv = inverter.forward_modeling(periods, true_model)
+    # # Forward modeling for "observed" data
+    # inverter = DispersionInverter()
+    # true_phv = inverter.forward_modeling(periods, true_model)
     
-    # Add noise
-    noise_level = 0.02  # 2% noise
-    observed_phv = true_phv * (1 + noise_level * np.random.randn(len(periods)))
-    phv_std = np.full_like(periods, noise_level * np.mean(true_phv))
+    # # Add noise
+    # noise_level = 0.02  # 2% noise
+    # observed_phv = true_phv * (1 + noise_level * np.random.randn(len(periods)))
+    # phv_std = np.full_like(periods, noise_level * np.mean(true_phv))
     
-    # Initial model (simpler than true model)
-    init_depths = np.array([5, 12, 18, 24, 35, 40])
-    init_vp = np.array([4.5, 6.5, 6.0, 6.0, 6.0, 6.0])
-    init_vs = np.array([2.0, 3.0, 4.0, 4.0, 4.0, 4.0])
+    # # Initial model (simpler than true model)
+    # init_depths = np.array([5, 12, 18, 24, 35, 40])
+    # init_vp = np.array([4.5, 6.5, 6.0, 6.0, 6.0, 6.0])
+    # init_vs = np.array([2.0, 3.0, 4.0, 4.0, 4.0, 4.0])
     
-    initial_model = create_layered_model(init_depths, init_vp, init_vs)
+    # initial_model = create_layered_model(init_depths, init_vp, init_vs)
     
-    try:
-        # Execute inversion with improved settings
-        print("Starting inversion...")
-        inverted_model, predicted_phv = invdispR(
-            periods, observed_phv, phv_std, initial_model,
-            water_depth=0, crust_thickness=30, n_iterations=20,  # Reduced iterations for testing
-            damping=0.05  # Reduced damping for better convergence
-        )
+    # try:
+    #     # Execute inversion with improved settings
+    #     print("Starting inversion...")
+    #     inverted_model, predicted_phv = invdispR(
+    #         periods, observed_phv, phv_std, initial_model,
+    #         water_depth=0, crust_thickness=30, n_iterations=20,  # Reduced iterations for testing
+    #         damping=0.05  # Reduced damping for better convergence
+    #     )
         
-        # Enhanced misfit evaluation
-        metrics = calculate_enhanced_misfit(observed_phv, predicted_phv, phv_std, periods)
-        print_misfit_summary(metrics)
+    #     # Enhanced misfit evaluation
+    #     metrics = calculate_enhanced_misfit(observed_phv, predicted_phv, phv_std, periods)
+    #     print_misfit_summary(metrics)
         
-        # Traditional RMS misfit for comparison
-        rms = calculate_rms_misfit(observed_phv, predicted_phv, phv_std)
-        print(f"Traditional RMS misfit: {rms:.4f} km/s")
+    #     # Traditional RMS misfit for comparison
+    #     rms = calculate_rms_misfit(observed_phv, predicted_phv, phv_std)
+    #     print(f"Traditional RMS misfit: {rms:.4f} km/s")
         
-        # Plot results
-        plot_results(periods, observed_phv, true_phv, predicted_phv, 
-                    true_model, initial_model, inverted_model)
+    #     # Plot results
+    #     plot_results(periods, observed_phv, true_phv, predicted_phv, 
+    #                 true_model, initial_model, inverted_model)
         
-    except Exception as e:
-        print(f"Error during inversion: {e}")
-        # Fallback: use forward modeling with initial model
-        predicted_phv = inverter.forward_modeling(periods, initial_model)
+    # except Exception as e:
+    #     print(f"Error during inversion: {e}")
+    #     # Fallback: use forward modeling with initial model
+    #     predicted_phv = inverter.forward_modeling(periods, initial_model)
         
-        # Calculate fallback misfit
-        metrics = calculate_enhanced_misfit(observed_phv, predicted_phv, phv_std, periods)
-        print_misfit_summary(metrics)
+    #     # Calculate fallback misfit
+    #     metrics = calculate_enhanced_misfit(observed_phv, predicted_phv, phv_std, periods)
+    #     print_misfit_summary(metrics)
         
-        rms = calculate_rms_misfit(observed_phv, predicted_phv, phv_std)
-        print(f"Fallback RMS misfit: {rms:.4f} km/s")
+    #     rms = calculate_rms_misfit(observed_phv, predicted_phv, phv_std)
+    #     print(f"Fallback RMS misfit: {rms:.4f} km/s")
         
-        plot_results(periods, observed_phv, true_phv, predicted_phv, 
-                    true_model, initial_model, initial_model)
+    #     plot_results(periods, observed_phv, true_phv, predicted_phv, 
+    #                 true_model, initial_model, initial_model)
 # %%
