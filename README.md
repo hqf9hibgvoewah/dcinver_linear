@@ -145,7 +145,7 @@ python3 example_usage.py
 
 # 作者提醒
 - 如你所见，这个反演代码并没有收敛，尽管现在稳定性有所改善，但是反演模型和正演模型依然存在较大差异。
-- 你可以把disba中的PhaseDispersion换成GroupDispersion并自行修改相关正演代码实现群速度反演。
+- 你可以把disba中的PhaseDispersion换成GroupDispersion并自行修改相关正演代码实现群速度反演。我已经加了（
 - 大部分是AI辅助开发，参考代码是给AI看的。作者其实不是很懂反演理论。
 - 对于使用该代码所产生的任何问题，作者不承担任何责任。
 - 希望有大佬能提供帮助，谢谢。
