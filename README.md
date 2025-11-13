@@ -33,12 +33,12 @@ python
 Apply
 from dispersion_inversion import DispersionInverter
 
-inverter = DispersionInverter()
-periods = np.linspace(5, 40, 20)
-model = np.array([[2, 4.0, 2.3, 2.5],  # [厚度, Vp, Vs, 密度]
-                  [8, 4.0, 3.5, 2.5],
-                  [5, 5.0, 3.5, 2.8]])
-predicted_phv = inverter.forward_modeling(periods, model)
+inverter = DispersionInverter() \n
+periods = np.linspace(5, 40, 20) \n
+model = np.array([[2, 4.0, 2.3, 2.5],  # [厚度, Vp, Vs, 密度] \n
+                  [8, 4.0, 3.5, 2.5],  \n
+                  [5, 5.0, 3.5, 2.8]]) \n
+predicted_phv = inverter.forward_modeling(periods, model) \n
 ### 2. 反演功能
 支持两种反演模式：
 

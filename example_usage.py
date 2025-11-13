@@ -173,20 +173,16 @@ if __name__ == "__main__":
     # periods = np.linspace(5, 40, 20)  # 5-40 seconds period
 
     periods = np.arange(0.05, 0.401, 0.01)
-    manual_ly_1 = np.arange(0.001, 0.010, 0.002)
-    manual_ly_2 = np.arange(0.011, 0.020, 0.004)
-    manual_ly_3 = np.arange(0.021, 0.040, 0.008)
-    manual_ly_4 = np.arange(0.041, 0.061, 0.008)
+    manual_ly_1 = np.arange(0.001, 0.010, 0.001)
+    manual_ly_2 = np.arange(0.010, 0.020, 0.002)
+    manual_ly_3 = np.arange(0.020, 0.030, 0.003)
+    manual_ly_4 = np.arange(0.030, 0.045, 0.004)
     manual_ly = np.concatenate((manual_ly_1, manual_ly_2, manual_ly_3, manual_ly_4))
     vr = np.array([0.258,0.257,0.255,0.253,0.25,0.248,0.246,0.244,0.242,0.24,0.238,0.237,
                    0.236,0.235,0.234,0.234,0.234,0.235,0.236,0.237,0.238,0.239,0.24,0.241,0.242,0.243,0.245,
                    0.246,0.247,0.248,0.25,0.251,0.253,0.254,0.255,0.256])
-    # True model (3-layer structure)
-    true_depths = np.array([2, 10, 15, 20, 30, 35])  # Interface depths
-    true_vp = np.array([4.0, 4.0, 5.0, 6.0, 6.0, 6.0])  # P-wave velocity
-    true_vs = np.array([2.3, 3.5, 3.5, 4.5, 4.5, 4.5])  # S-wave velocity
 
-    new_vp, new_vs = empirical_initial_model(vr,periods,1/3,manual_ly=manual_ly,c_model=2)
+    new_vp, new_vs = empirical_initial_model(vr,periods,1/3,manual_ly=manual_ly,c_model=2) # type: ignore
     # %%
     true_model = create_layered_model(manual_ly, new_vp, new_vs)
     
@@ -198,9 +194,9 @@ if __name__ == "__main__":
     # noise_level = 0.002  # 2% noise
     # observed_phv = true_phv * (1 + noise_level * np.random.randn(len(periods)))
     # phv_std = np.full_like(periods, noise_level * np.mean(true_phv))
-    phv_std = conservative_phv_std_strategy(vr, periods, noise_level=0.05)
+    phv_std = conservative_phv_std_strategy(vr, periods, noise_level=0.01)
 
-    # Initial model (simpler than true model)    
+    # Initial model (simpler than true model)
     initial_model = create_layered_model(manual_ly, new_vp, new_vs)
     # %%
     try:
@@ -208,7 +204,7 @@ if __name__ == "__main__":
         print("Starting inversion...")
         inverted_model, predicted_phv = invdispR(
             periods, vr, phv_std, initial_model,
-            water_depth=0, crust_thickness=30, n_iterations=200,  # Reduced iterations for testing
+            water_depth=0, crust_thickness=30, n_iterations=20,  # Reduced iterations for testing
             damping=0.005  # Reduced damping for better convergence
         )
         
@@ -275,7 +271,7 @@ if __name__ == "__main__":
         print("Starting inversion...")
         inverted_model, predicted_phv = invdispR(
             periods, observed_phv, phv_std, initial_model,
-            water_depth=0, crust_thickness=30, n_iterations=500,  # Reduced iterations for testing
+            water_depth=0, crust_thickness=30, n_iterations=20,  # Reduced iterations for testing
             damping=0.05  # Reduced damping for better convergence
         )
         
